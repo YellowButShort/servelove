@@ -124,6 +124,7 @@ server:Certificate("certificate.crt")
 server:PrivateKey("private.key") 
 ```
 
+## Full code
 So let's compile everything we have.
 
 ```lua
