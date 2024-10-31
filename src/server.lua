@@ -1,6 +1,7 @@
 local cwd = ((...):reverse():gsub((".server"):reverse(), ""):reverse()) -- proper cleanup was left on my old laptop lol
 local socket = require("socket")
 local ssl = require(cwd..".lib")
+local profiler = require(cwd .. ".profiler")
 
 ---@class ServeLoveServer
 local server = {}
@@ -28,6 +29,50 @@ local function RecursiveItems(path, result)
 		end
 	end
 	return result
+end
+local function FindRoute(s, route)
+    if s.routes[route] then
+        return s.routes[route], 1
+    end
+
+    for _, var in pairs(s.routes) do
+        local complex_path = "[START]" .. route .. "[END]"
+        local complex_key  = "%[START%]" .. var.path:gsub("%b<>", "(%%w+)") .. "%[END%]"
+        local start = complex_path:find(complex_key)
+        if start then
+            return var, 2
+        end
+    end
+
+    for _, var in ipairs(s.folders) do
+        for _, file in ipairs(RecursiveItems(var.path)) do
+            if "/" .. var.prefix .. file:sub(file:find("/"), -1) == route then
+                return file, 3
+            end
+        end
+    end
+end
+local function ReadConnection(self, conn, method)
+    local headers = {}
+    local query = ""
+    while true do
+        local s = conn:receive("*l")
+        if s ~= "" then
+            local temp = split(s, ": ")
+            headers[temp[1]] = temp[2]
+        else
+            if headers["Content-Length"] then
+                if headers["Content-Length"] > 0 then
+                    query = conn:receive(tonumber(headers["Content-Length"]))
+                end
+            elseif method == "POST" then
+                conn:send(self:AssembleResponse(411))
+                return false
+            end
+            break
+        end
+    end
+    return query, headers
 end
 
 function server:__init(ip, port)
@@ -184,10 +229,24 @@ end
 ---@param msg string
 ---@param level "NONE"|"ERROR"|"WARN"|"INFO"|"DEBUG"
 function server:Log(msg, level)
-    level_int = loglevels[level or "INFO"]
+    local level_int = loglevels[level or "INFO"]
     if level_int <= loglevels[self.verbose] then
         print("["..(level or "INFO").."]["..os.date("%X").."]: ".. msg)
     end
+end
+
+---Starts the profiler to measure the performance of your code
+function server:StartProfiler()
+    profiler.Enable(self)
+end
+---Stops the recording of the profiler
+function server:DisableProfiler()
+    profiler.Disable(self)
+end
+---Outputs the profiler results into console + returns it as a string
+---@return string
+function server:PrintProfiler(minimum)
+    return profiler.PrintResult(self, minimum)
 end
 
 ---Sets the SSL Private Key (absolute path)
@@ -345,163 +404,91 @@ function server:Run(retries, retry_timeout)
     while true do
         self:Log("Waiting for connection...", "DEBUG")
         local conn = self.socket:accept()
+        local sslerr
+
         if self.enablessl then
-            conn, err = ssl.wrap(conn, self.sslparams)
             self:Log("SSL Handshake", "DEBUG")
+            conn, sslerr = ssl.wrap(conn, self.sslparams)
             conn:dohandshake()
         end
         local r, e = conn:receive()
         if r then
-            self:Log(r, "DEBUG")
             local args = split(r, " ")
             self:Log(("Connection: %s   %s  %s"):format(args[1], args[2], args[3]), "INFO")
             local path = args[2]
             if path:find("?") then
                 path = path:sub(0, path:find("?")-1)
             end
-            if self.routes[path] then
-                if self.routes[path].methods[args[1]] then
-                    local query = ""
-                    local headers = {}
-                    local auth, success = true, true
-                    while true do
-                        local s, code = conn:receive("*l")
-                        if s ~= "" then
-                            local temp = split(s, ": ")
-                            headers[temp[1]] = temp[2]
-                        else
-                            if headers["Content-Length"] then
-                                if headers["Content-Length"] > 0 then
-                                    query = conn:receive(tonumber(headers["Content-Length"]))
-                                end
-                            elseif args[1] == "POST" then
-                                conn:send(self:AssembleResponse(411))
-                            end
-                            break
-                        end
+
+            local res, type = FindRoute(self, path)
+            if res then
+                self:Log("Method check", "DEBUG")
+                if type ~= 3 and not res.methods[args[1]] then
+                    goto continue
+                end
+
+                self:Log("Connection read", "DEBUG")
+                local query, headers = ReadConnection(self, conn, args[1])
+                if not query then
+                    goto continue
+                end
+                local complex_args
+                if type == 2 then
+                    self:Log("complex_args read", "DEBUG")
+                    local complex_path = "[START]" .. path .. "[END]"
+                    local complex_key  = "%[START%]" .. res.path:gsub("%b<>", "(%%w+)") .. "%[END%]"
+                    complex_args = {}
+                    local vals = {complex_path:match(complex_key)}
+                    local counter = 1
+                    for key in res.path:gmatch("%b<>") do
+                        complex_args[key:sub(2, -2)] = vals[counter]
+                        counter = counter + 1
                     end
-                    if self.routes[path].authentication then
-                        local res, msg = pcall(self.routes[path].authentication)
-                        if res then
-                            auth = not not msg
-                        else
-                            self:Log(e, "ERROR")
-                            auth = false
-                            success = false
-                        end
-                    end
-                    if success then
-                        if auth then
-                            local response = self:NewResponse()
-                            local res, msg = pcall(self.routes[path].func, self:NewQuery(query, headers, args[2]), response)
-                            if res then
-                                conn:send(self:AssembleResponse(response:GetCode(), msg, response:GetHeaders()))
-                            else
-                                self:Log(msg, "ERROR")
-                                conn:send(self:AssembleResponse(503))
-                            end
-                        else
+                end
+                if res.authentication then
+                    self:Log("Auth", "DEBUG")
+
+                    local t = love.timer.getTime()
+                    local res, msg = pcall(res.authentication, self:NewQuery(query, headers, args[2], complex_args))
+                    profiler.RecordTime(self, love.timer.getTime() - t, "Authentication", path)
+
+                    if res then
+                        if not msg then
+                            self:Log("Auth failed", "DEBUG")
                             conn:send(self:AssembleResponse(403))
+                            goto continue
                         end
                     else
-                        conn:send(self:AssembleResponse(405))
+                        self:Log(e, "ERROR")
+                        conn:send(self:AssembleResponse(503))
                     end
+                end
+                
+                local t = love.timer.getTime()
+                if type == 3 then
+                    local response = self:NewResponse()
+                    
+                    conn:send(self:AssembleResponse(200, response:NewFile(res), response:GetHeaders()))
                 else
-                    conn:send(self:AssembleResponse(405))
+                    local response = self:NewResponse()
+                    local res, msg = pcall(res.func, self:NewQuery(query, headers, args[2], complex_args), response)
+                    if res then
+                        conn:send(self:AssembleResponse(response:GetCode(), msg, response:GetHeaders()))
+                    else
+                        self:Log(msg, "ERROR")
+                        conn:send(self:AssembleResponse(503))
+                    end
                 end
+                profiler.RecordTime(self, love.timer.getTime() - t, "Callback", path)
             else
-                local success = false
-                for _, var in pairs(self.routes) do
-                    local complex_path = "[START]" .. path .. "[END]"
-                    local complex_key  = "%[START%]" .. var.path:gsub("%b<>", "(%%w+)") .. "%[END%]"
-                    local start = complex_path:find(complex_key)
-                    if start then
-                        local complex_args = {}
-                        local vals = {complex_path:match(complex_key)}
-                        local counter = 1
-                        for key in var.path:gmatch("%b<>") do
-                            complex_args[key:sub(2, -2)] = vals[counter]
-                            counter = counter + 1
-                        end
-
-                        if var.methods[args[1]] then
-                            local query = ""
-                            local headers = {}
-                            local auth, success = true, true
-                            while true do
-                                local s, code = conn:receive("*l")
-                                if s ~= "" then
-                                    local temp = split(s, ": ")
-                                    headers[temp[1]] = temp[2]
-                                else
-                                    if headers["Content-Length"] then
-                                        if headers["Content-Length"] > 0 then
-                                            query = conn:receive(tonumber(headers["Content-Length"]))
-                                        end
-                                    elseif args[1] == "POST" then
-                                        conn:send(self:AssembleResponse(411))
-                                    end
-                                    break
-                                end
-                            end
-                            if var.authentication then
-                                local res, msg = pcall(var.authentication)
-                                if res then
-                                    auth = not not msg
-                                else
-                                    self:Log(msg, "ERROR")
-                                    auth = false
-                                    success = false
-                                end
-                            end
-                            if success then
-                                if auth then
-                                    local response = self:NewResponse()
-                                    local res, msg = pcall(var.func, self:NewQuery(query, headers, args[2], complex_args), response)
-                                    if res then
-                                        conn:send(self:AssembleResponse(response:GetCode(), msg, response:GetHeaders()))
-                                    else
-                                        self:Log(msg, "ERROR")
-                                        conn:send(self:AssembleResponse(503))
-                                    end
-                                else
-                                    conn:send(self:AssembleResponse(403))
-                                end
-                            else
-                                conn:send(self:AssembleResponse(405))
-                            end
-                        else
-                            conn:send(self:AssembleResponse(405))
-                        end
-                        success = true
-                        break
-                    end
-                end
-                if not success then
-                    local found = false
-                    for _, var in ipairs(self.folders) do
-                        for _, file in ipairs(RecursiveItems(var.path)) do
-                            if var.prefix .. file == var.path .. path then
-                                local response = self:NewResponse()
-                                conn:send(self:AssembleResponse(200, response:NewFile(file), response:GetHeaders()))
-                                found = true
-                                break
-                            end
-                        end
-                        if found then
-                            break
-                        end
-                    end 
-                    if not found then
-                        conn:send(self:AssembleResponse(404))
-                    end
-                end
+                conn:send(self:AssembleResponse(404))
             end
         elseif e == "closed" then
             self:Log("Connection closed", "WARN")
         else
             self:Log(e, "ERROR")
         end
+        ::continue::
         conn:close()
     end
 end

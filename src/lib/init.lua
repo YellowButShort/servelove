@@ -13,8 +13,8 @@ local system = love.system.getOS()
 if system == "Windows" then
    separator = "/"
    --test for 64 bit interface
-   cmd = io.popen("echo %PROCESSOR_ARCHITECTURE%");
-   res = cmd:read("*a");
+   local cmd = io.popen("echo %PROCESSOR_ARCHITECTURE%");
+   local res = cmd:read("*a");
    
    if res:lower():find("64") then
       filename = "ssl_win64.dll"
@@ -24,8 +24,8 @@ if system == "Windows" then
 elseif system == "Linux" then
    separator = "\\"
    --test for 64 bit interface
-   cmd = io.popen("uname -m");
-   res = cmd:read("*a");
+   local cmd = io.popen("uname -m");
+   local res = cmd:read("*a");
    
    if res:lower():find("64") then
       filename = "ssl_lin64.so"
