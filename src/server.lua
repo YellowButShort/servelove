@@ -404,8 +404,9 @@ function server:Run(retries, retry_timeout)
     while true do
         self:Log("Waiting for connection...", "DEBUG")
         local conn = self.socket:accept()
+        local path
+        local time
         local sslerr
-
         if self.enablessl then
             self:Log("SSL Handshake", "DEBUG")
             conn, sslerr = ssl.wrap(conn, self.sslparams)
@@ -413,9 +414,10 @@ function server:Run(retries, retry_timeout)
         end
         local r, e = conn:receive()
         if r then
+            time = love.timer.getTime()
             local args = split(r, " ")
             self:Log(("Connection: %s   %s  %s"):format(args[1], args[2], args[3]), "INFO")
-            local path = args[2]
+            path = args[2]
             if path:find("?") then
                 path = path:sub(0, path:find("?")-1)
             end
@@ -490,6 +492,7 @@ function server:Run(retries, retry_timeout)
         end
         ::continue::
         conn:close()
+        profiler.RecordTime(self, love.timer.getTime() - time, "Total time per connection", path)
     end
 end
 

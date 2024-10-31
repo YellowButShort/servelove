@@ -2,7 +2,8 @@ local profiler = {}
 local hub = {}
 local order = {
     "Authentication",
-    "Callback"
+    "Callback",
+    "Total time per connection"
 }
 
 function profiler.RecordTime(server, time, event, path)
