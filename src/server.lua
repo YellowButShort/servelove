@@ -485,6 +485,7 @@ function server:Run(retries, retry_timeout)
             else
                 conn:send(self:AssembleResponse(404))
             end
+            profiler.RecordTime(self, love.timer.getTime() - time, "Total time per connection", path)
         elseif e == "closed" then
             self:Log("Connection closed", "WARN")
         else
@@ -492,7 +493,6 @@ function server:Run(retries, retry_timeout)
         end
         ::continue::
         conn:close()
-        profiler.RecordTime(self, love.timer.getTime() - time, "Total time per connection", path)
     end
 end
 
