@@ -66,7 +66,7 @@ local function ReadConnection(self, conn, method)
                     query = conn:receive(tonumber(headers["Content-Length"]))
                 end
             elseif method == "POST" then
-                conn:send(self:AssembleResponse(411))
+                conn:send(AssembleResponse(self, 411))
                 return false
             end
             break
@@ -159,9 +159,9 @@ local newquery = {__index = require(cwd .. ".baserequest")}
 ---Creates a new resource on the server.
 ---@param route string Address of the resource. Must start with "/". Path can include <>. They will be treated as anything and will be added as arguments to callback and authentication.   
 ---@param func function Callback that will be called when the address is requested. The function takes ServeLoveRequest and ServeLoveResponse as arguments. Whatever the function returns will be sent as a response body
----@param authentication function? Callback that will be called when the address is requested prior to the regular callback. Used to authenticate the user. Must return either true or false. If the result is true - callback is called and everything goes as usual. If the result is false - the server sends 403 Forbidden 
 ---@param methods table? What methods will the server accept. If not provided, all methods are allowed
-function server:Route(route, func, authentication, methods)
+---@param authentication function? Callback that will be called when the address is requested prior to the regular callback. Used to authenticate the user. Must return either true or false. If the result is true - callback is called and everything goes as usual. If the result is false - the server sends 403 Forbidden 
+function server:Route(route, func, methods, authentication)
     local proxymethods = {}
     if not (type(route) == "string") then
         error("Expected string as route!", 2)
@@ -188,10 +188,10 @@ end
 
 ---Similar to server:Route, but opens an entire folder for access. Can be used for nearly anything
 ---@param path string Path to the folder relative to where the library was required
----@param methods table? What methods will the server accept. If not provided, all methods are allowed
 ---@param prefix string? What should come before the path in the URL. For example "assets/".
+---@param methods table? What methods will the server accept. If not provided, all methods are allowed
 ---@param authentication function? Callback that will be called when the address is requested prior to the regular callback. Used to authenticate the user. Must return either true or false. If the result is true - callback is called and everything goes as usual. If the result is false - the server sends 403 Forbidden 
-function server:RouteFolder(path, methods, prefix, authentication)
+function server:RouteFolder(path, prefix, methods, authentication)
     local proxymethods = {}
     if not (type(path) == "string") then
         error("Expected string as path!", 2)
@@ -282,7 +282,7 @@ end
 ---@param content any?
 ---@param headers table?
 ---@return string
-function server:AssembleResponse(code, content, headers)
+local function AssembleResponse(self, code, content, headers)
     local res = ""
     res = res .. self.responses[code].title
     content = content or self.responses[code].content
@@ -324,13 +324,13 @@ end
 ---@param headers any?
 ---@param link any?
 ---@return table
-function server:NewQuery(query, headers, link, complex_args)
-    return setmetatable({}, newquery):__init(query, headers, link, complex_args)
+local function NewQuery(query, headers, link, method, conn, complex_args)
+    return setmetatable({}, newquery):__init(query, headers, link, method, conn, complex_args)
 end
 
 ---Returns a new response for the client
 ---@return table
-function server:NewResponse()
+local function NewResponse()
     return setmetatable({}, newresponse):__init()
 end
 
@@ -426,6 +426,7 @@ function server:Run(retries, retry_timeout)
             if res then
                 self:Log("Method check", "DEBUG")
                 if type ~= 3 and not res.methods[args[1]] then
+                    conn:send(AssembleResponse(self, 405))
                     goto continue
                 end
 
@@ -451,39 +452,39 @@ function server:Run(retries, retry_timeout)
                     self:Log("Auth", "DEBUG")
 
                     local t = love.timer.getTime()
-                    local res, msg = pcall(res.authentication, self:NewQuery(query, headers, args[2], complex_args))
+                    local res, msg = pcall(res.authentication, NewQuery(query, headers, args[2], args[1], conn, complex_args))
                     profiler.RecordTime(self, love.timer.getTime() - t, "Authentication", path)
 
                     if res then
                         if not msg then
                             self:Log("Auth failed", "DEBUG")
-                            conn:send(self:AssembleResponse(403))
+                            conn:send(AssembleResponse(self, 403))
                             goto continue
                         end
                     else
                         self:Log(e, "ERROR")
-                        conn:send(self:AssembleResponse(503))
+                        conn:send(AssembleResponse(self, 503))
                     end
                 end
                 
                 local t = love.timer.getTime()
                 if type == 3 then
-                    local response = self:NewResponse()
+                    local response = NewResponse()
                     
-                    conn:send(self:AssembleResponse(200, response:NewFile(res), response:GetHeaders()))
+                    conn:send(AssembleResponse(self, 200, response:NewFile(res), response:GetHeaders()))
                 else
-                    local response = self:NewResponse()
-                    local res, msg = pcall(res.func, self:NewQuery(query, headers, args[2], complex_args), response)
+                    local response = NewResponse()
+                    local res, msg = pcall(res.func, NewQuery(query, headers, args[2], args[1], conn, complex_args), response)
                     if res then
-                        conn:send(self:AssembleResponse(response:GetCode(), msg, response:GetHeaders()))
+                        conn:send(AssembleResponse(self, response:GetCode(), msg, response:GetHeaders()))
                     else
                         self:Log(msg, "ERROR")
-                        conn:send(self:AssembleResponse(503))
+                        conn:send(AssembleResponse(self, 503))
                     end
                 end
                 profiler.RecordTime(self, love.timer.getTime() - t, "Callback", path)
             else
-                conn:send(self:AssembleResponse(404))
+                conn:send(AssembleResponse(self, 404))
             end
             profiler.RecordTime(self, love.timer.getTime() - time, "Total time per connection", path)
         elseif e == "closed" then

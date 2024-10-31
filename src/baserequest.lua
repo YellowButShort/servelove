@@ -5,10 +5,12 @@ local cwd = ((...):reverse():gsub((".baserequest"):reverse(), ""):reverse()) -- 
 --local nativefs = require(cwd .. ".nativefs")
 local json = require(cwd .. ".json")
 
-function request:__init(payload, headers, link, complex_args)
+function request:__init(payload, headers, link, method, peer, complex_args)
     self.payload = payload
     self.headers = headers
     self.link = link
+    self.method = method
+    self.peer = peer
     self.complex_args = complex_args or {}
     return self
 end
@@ -21,6 +23,9 @@ end
 ---@return unknown
 function request:GetHeaders()
     return self.headers
+end
+function request:GetMethod()
+    return self.method
 end
 local function split(inputstr, sep)
     local t={}
@@ -38,7 +43,7 @@ end
 ---@return string|table
 function request:GetUrlEncoded(key)
     local encoded = self.__urlencoded or {}
-    if not self.__urlencoded then
+    if not self.__urlencoded and self.link:find("?") then
         local t = split(self.link:sub(self.link:find("?")+1, -1), "&")
         for _, var in ipairs(t) do
             local keyvalue = split(var, "=")
@@ -46,7 +51,14 @@ function request:GetUrlEncoded(key)
             self.__urlencoded = encoded
         end
     end
-    return key and encoded[key] or encoded 
+    if not key then
+        return encoded
+    else
+        return encoded[key]
+    end
+end
+function request:GetPeer()
+    return self.peer:getpeername()
 end
 ---Returns the query arguments defined in :Route() with <>. If key is provided returns the value, otherwise it returns the whole table
 ---@param key string?
