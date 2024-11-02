@@ -5,27 +5,40 @@ local cwd = ((...):reverse():gsub((".baserequest"):reverse(), ""):reverse()) -- 
 --local nativefs = require(cwd .. ".nativefs")
 local json = require(cwd .. ".json")
 
-function request:__init(payload, headers, link, method, peer, complex_args)
+function request:__init(payload, headers, link, method, peer, cookies, complex_args)
     self.payload = payload
     self.headers = headers
     self.link = link
     self.method = method
     self.peer = peer
+    self.cookies = cookies
     self.complex_args = complex_args or {}
     return self
 end
 ---Returns the query as a JSON converted table
----@return unknown
+---@return table
 function request:GetJson()
     return json.decode(self.payload)
 end
 ---Returns the table with request headers
----@return unknown
+---@return table
 function request:GetHeaders()
     return self.headers
 end
+---Returns the method that was used during the request
+---@return string
 function request:GetMethod()
     return self.method
+end
+---Returns a table of cookies that user has. If key is provided, it returns a cookie with this name
+---@param key string
+---@return ServeLoveCookie[]
+function request:GetCookies(key)
+    if key then
+        return self.cookies[key]
+    else
+        return self.cookies
+    end
 end
 local function split(inputstr, sep)
     local t={}

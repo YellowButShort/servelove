@@ -103,6 +103,45 @@ server:Route("/File/<file>", function(query, response)
 end, {"POST", "GET"}, auth) -- right there
 ```
 
+## Cookies
+Sometimes, using key in headers is not really an option. You can achieve the same goal with authenticating a user once and sending them a cookie with a temporary login information. Apart from that, cookies can be used for a very wide variety of tasks.
+
+```lua
+server:Route("/login", function(query, response) 
+-- For the sake of the example, we will accept login and password as URL encoded parameters. 
+-- It's a really terrible idea and should never be used in practice... but I'm not teaching you web security - I'm teaching you cookies!
+    local login = query:GetUrlEncoded("login")
+    local password = query:GetUrlEncoded("password")
+
+    local result = VerifyUser(login, password) -- some random function that can test if the credentials are legit. If they are, then we return a temporary key
+    if result then
+        response:SetCookie("tempkey", result)
+                :MaxAge(86400) -- we can also daisy-chain cookies settings. This function will set up how long a cookie will last on user's machine
+        return "Welcome!"
+    else
+        return "Who are you?"
+    end
+end)
+```
+
+And if we need to validate the user, we can do something like this
+
+```lua
+server:Route("/page", function(query, response)
+    -- your code on this random page
+end,
+nil, -- all methods are allowed
+function(query, response) -- our auth function
+    local tempkey = query:GetCookies("tempkey")
+    if tempkey then -- if someone is trying to access without having this cookie, it will be nil
+        if VerifyKey(tempkey) then -- a similar random function that validates the temporary key. Is the key is valid, it returns true
+            return true
+        end
+    end
+end)
+```
+So whenever someone tries to access this page without logging in, they get an error saying that they haven't been authorized.
+
 ## Profiler
 Let's measure the performance of our code
 
@@ -184,6 +223,35 @@ server:RouteFolder(
     "server/assets", -- This is the folder either in your project folder, or in your user folder. Same rules as with love.filesystem
     "assets"  -- And this is how it should it be in Url. So in our case a `test.png` file stored in `server/assets/test.png` will only be accessible at `assets/test.png`
 )
+
+
+server:Route("/login", function(query, response) 
+-- For the sake of the example, we will accept login and password as URL encoded parameters. 
+-- It's a really terrible idea and should never be used in practice... but I'm not teaching you web security - I'm teaching you cookies!
+    local login = query:GetUrlEncoded("login")
+    local password = query:GetUrlEncoded("password")
+
+    local result = VerifyUser(login, password) -- some random function that can test if the credentials are legit. If they are, then we return a temporary key
+    if result then
+        response:SetCookie("tempkey", result)
+                :MaxAge(86400) -- we can also daisy-chain cookies settings. This function will set up how long a cookie will last on user's machine
+        return "Welcome!"
+    else
+        return "Who are you?"
+    end
+end)
+server:Route("/page", function(query, response)
+    -- your code on this random page
+end,
+nil, -- all methods are allowed
+function(query, response) -- our auth function
+    local tempkey = query:GetCookies("tempkey")
+    if tempkey then -- if someone is trying to access without having this cookie, it will be nil
+        if VerifyKey(tempkey) then -- a similar random function that validates the temporary key. Is the key is valid, it returns true
+            return true
+        end
+    end
+end)
 
 
 -- To start the profiler, we can use this little function

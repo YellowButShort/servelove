@@ -1,7 +1,9 @@
+---@diagnostic disable: need-check-nil, discard-returns
 local cwd = ((...):reverse():gsub((".server"):reverse(), ""):reverse()) -- proper cleanup was left on my old laptop lol
 local socket = require("socket")
 local ssl = require(cwd..".lib")
 local profiler = require(cwd .. ".profiler")
+local ltimer = require("love.timer")
 
 ---@class ServeLoveServer
 local server = {}
@@ -30,6 +32,47 @@ local function RecursiveItems(path, result)
 	end
 	return result
 end
+---Creates raw http response
+---@param code integer
+---@param content any?
+---@param headers table?
+---@param cookies ServeLoveCookie[]?
+---@return string
+local function AssembleResponse(self, code, content, headers, cookies)
+    local res = ""
+    res = res .. self.responses[code].title
+    content = content or self.responses[code].content
+    local head = {}
+    for i, var in pairs(self.responses[code].headers) do
+        head[i] = var
+    end
+    if headers then
+        for i, var in pairs(headers) do
+            head[i] = var
+        end
+    end
+    if not head["Content-Length"] then
+        head["Content-Length"] = (content or ""):len()
+    end
+
+    for i, var in pairs(head) do
+        res = res .. "\r\n" .. i .. ": " .. var
+    end
+
+    if cookies then
+        for _, var in ipairs(cookies) do
+            res = res .. "\r\n" .. var:Assemble()
+        end
+    end
+
+    res = res .. "\r\n\r\n"
+
+    if content then
+        res = res .. content
+    end
+
+    return res
+end
 local function FindRoute(s, route)
     if s.routes[route] then
         return s.routes[route], 1
@@ -54,12 +97,21 @@ local function FindRoute(s, route)
 end
 local function ReadConnection(self, conn, method)
     local headers = {}
+    local cookies = {}
     local query = ""
     while true do
         local s = conn:receive("*l")
         if s ~= "" then
-            local temp = split(s, ": ")
-            headers[temp[1]] = temp[2]
+            local temp = split(s, ":")
+            if temp[1] == "Cookie" then
+                local list = split(temp[2], ";")
+                for _, var in ipairs(list) do
+                    local cookie = split(var, "=")
+                    cookies[cookie[1]:sub(2, -1)] = cookie[2]:sub(2, -1)
+                end
+            else
+                headers[temp[1]] = temp[2]:sub(2, -1)
+            end
         else
             if headers["Content-Length"] then
                 if headers["Content-Length"] > 0 then
@@ -72,7 +124,7 @@ local function ReadConnection(self, conn, method)
             break
         end
     end
-    return query, headers
+    return query, headers, cookies
 end
 
 function server:__init(ip, port)
@@ -277,41 +329,6 @@ function server:CaFile(filepath)
     self.sslparams.cafile = filepath
 end
 
----Creates raw http response
----@param code integer
----@param content any?
----@param headers table?
----@return string
-local function AssembleResponse(self, code, content, headers)
-    local res = ""
-    res = res .. self.responses[code].title
-    content = content or self.responses[code].content
-    local head = {}
-    for i, var in pairs(self.responses[code].headers) do
-        head[i] = var
-    end
-    if headers then
-        for i, var in pairs(headers) do
-            head[i] = var
-        end
-    end
-    if not head["Content-Length"] then
-        head["Content-Length"] = (content or ""):len()
-    end
-
-    for i, var in pairs(head) do
-        res = res .. "\r\n" .. i .. ": " .. var
-    end
-
-    res = res .. "\r\n\r\n"
-
-    if content then
-        res = res .. content
-    end
-
-    return res
-end
-
 
 ---Returns default StatusResponses. Can be used for setting default page, or to modify existing error page.
 ---@return table
@@ -323,13 +340,13 @@ end
 ---@param query any?
 ---@param headers any?
 ---@param link any?
----@return table
-local function NewQuery(query, headers, link, method, conn, complex_args)
-    return setmetatable({}, newquery):__init(query, headers, link, method, conn, complex_args)
+---@return ServeLoveRequest
+local function NewQuery(query, headers, link, method, conn, cookies, complex_args)
+    return setmetatable({}, newquery):__init(query, headers, link, method, conn, cookies, complex_args)
 end
 
 ---Returns a new response for the client
----@return table
+---@return ServeLoveResponse
 local function NewResponse()
     return setmetatable({}, newresponse):__init()
 end
@@ -369,9 +386,9 @@ function server:Run(retries, retry_timeout)
                 else
                     self:Log("    Success!", "DEBUG")
                     local ip, port = self.socket:getsockname()
-                    self:Log(("The server is running on %s:%s"):format(ip, port), "WARN")
                     local protocol = self.enablessl and "https" or "http"
                     if ip == "0.0.0.0" then
+                        self:Log(("The server is running on all available addresses (%s://%s:%s)"):format(protocol, ip, port), "WARN")
                         local res
                         if love.system.getOS() == "Linux" then
                             local cmd = io.popen("hostname -I | awk '{print $1}'")
@@ -385,9 +402,11 @@ function server:Run(retries, retry_timeout)
                         if res and res ~= "" then
                             self:Log(("    The server is running on public address accessible at %s://%s:%s"):format(protocol, res, port), "INFO")
                         end
+                        self:Log(("    The server is running on private address accessible at %s://localhost:%s"):format(protocol, port), "INFO")
+                        self:Log(("    The server is running on private address accessible at %s://127.0.0.1:%s"):format(protocol, port), "INFO")
+                    else
+                        self:Log(("The server is running on %s://%s:%s"):format(protocol, ip, port), "WARN")
                     end
-                    self:Log(("    The server is running on private address accessible at %s://localhost:%s"):format(protocol, port), "INFO")
-                    self:Log(("    The server is running on private address accessible at %s://127.0.0.1:%s"):format(protocol, port), "INFO")
                     if love.system.getOS() == "Windows" then
                         self:Log("Windows version is heavily outdated. It may contain severe security vulnerabities so I would advise against using it in production", "WARN")
                     end
@@ -396,7 +415,7 @@ function server:Run(retries, retry_timeout)
             end
             n = n + 1
             if retry_timeout then
-                love.timer.sleep(retry_timeout)
+                ltimer.sleep(retry_timeout)
             end
         end
     end
@@ -410,13 +429,18 @@ function server:Run(retries, retry_timeout)
         if self.enablessl then
             self:Log("SSL Handshake", "DEBUG")
             conn, sslerr = ssl.wrap(conn, self.sslparams)
-            conn:dohandshake()
+            if conn then
+                conn:dohandshake()
+            else
+                self:Log(sslerr, "ERROR")
+                goto continue
+            end
         end
         local r, e = conn:receive()
         if r then
-            time = love.timer.getTime()
-            local args = split(r, " ")
-            self:Log(("Connection: %s   %s  %s"):format(args[1], args[2], args[3]), "INFO")
+            time = ltimer.getTime()
+            local args = split(r, "%s")
+            self:Log(("Connection: %s  %s  %s"):format(args[1], args[2], args[3]), "INFO")
             path = args[2]
             if path:find("?") then
                 path = path:sub(0, path:find("?")-1)
@@ -431,7 +455,7 @@ function server:Run(retries, retry_timeout)
                 end
 
                 self:Log("Connection read", "DEBUG")
-                local query, headers = ReadConnection(self, conn, args[1])
+                local query, headers, cookies = ReadConnection(self, conn, args[1])
                 if not query then
                     goto continue
                 end
@@ -451,9 +475,9 @@ function server:Run(retries, retry_timeout)
                 if res.authentication then
                     self:Log("Auth", "DEBUG")
 
-                    local t = love.timer.getTime()
-                    local res, msg = pcall(res.authentication, NewQuery(query, headers, args[2], args[1], conn, complex_args))
-                    profiler.RecordTime(self, love.timer.getTime() - t, "Authentication", path)
+                    local t = ltimer.getTime()
+                    local res, msg = pcall(res.authentication, NewQuery(query, headers, args[2], args[1], conn, cookies, complex_args))
+                    profiler.RecordTime(self, ltimer.getTime() - t, "Authentication", path)
 
                     if res then
                         if not msg then
@@ -467,26 +491,26 @@ function server:Run(retries, retry_timeout)
                     end
                 end
                 
-                local t = love.timer.getTime()
+                local t = ltimer.getTime()
                 if type == 3 then
                     local response = NewResponse()
                     
                     conn:send(AssembleResponse(self, 200, response:NewFile(res), response:GetHeaders()))
                 else
                     local response = NewResponse()
-                    local res, msg = pcall(res.func, NewQuery(query, headers, args[2], args[1], conn, complex_args), response)
+                    local res, msg = pcall(res.func, NewQuery(query, headers, args[2], args[1], conn, cookies, complex_args), response)
                     if res then
-                        conn:send(AssembleResponse(self, response:GetCode(), msg, response:GetHeaders()))
+                        conn:send(AssembleResponse(self, response:GetCode(), msg, response:GetHeaders(), response:GetCookies()))
                     else
                         self:Log(msg, "ERROR")
                         conn:send(AssembleResponse(self, 503))
                     end
                 end
-                profiler.RecordTime(self, love.timer.getTime() - t, "Callback", path)
+                profiler.RecordTime(self, ltimer.getTime() - t, "Callback", path)
             else
                 conn:send(AssembleResponse(self, 404))
             end
-            profiler.RecordTime(self, love.timer.getTime() - time, "Total time per connection", path)
+            profiler.RecordTime(self, ltimer.getTime() - time, "Total time per connection", path)
         elseif e == "closed" then
             self:Log("Connection closed", "WARN")
         else

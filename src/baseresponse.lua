@@ -2,10 +2,12 @@
 local response = {}
 local cwd = ((...):reverse():gsub((".baseresponse"):reverse(), ""):reverse()) -- proper cleanup was left on my old laptop lol
 local json = require(cwd .. ".json")
+local base_cookie = require(cwd .. ".basecookie")
 local puremagic = require(cwd .. ".puremagic")
 
 function response:__init()
     self.headers = {}
+    self.cookies = {}
     self.code = 200
     return self
 end
@@ -43,6 +45,32 @@ end
 ---@return table
 function response:GetHeaders()
     return self.headers
+end
+---Creates and sets a new cookie that user will save. Anything you put here could be later accessed in subsequent requests from this user (if they support cookies)
+---@param name string
+---@param value string
+---@return ServeLoveCookie
+function response:SetCookie(name, value)
+    local cookie = setmetatable({}, base_cookie)
+
+    --https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie
+    if name:match([=[[",;\%(%)<>@:%[%]?={}]]=]) then
+        error("Cookie name cannot contain ".. name:match([=[[",;\%(%)<>@:%[%]?={}]]=]) .. "!", 2)
+    end
+    if value:match([=[[",;\]]=]) then
+        error("Cookie value cannot contain ".. value:match([=[[",;\]]=]) .. "!", 2)
+    end
+
+    cookie.name = name
+    cookie.value = '"' .. value .. '"'
+    table.insert(self.cookies, cookie)
+
+    return cookie
+end
+---Returns all cookies set within this response
+---@return ServeLoveCookie[]
+function response:GetCookies()
+    return self.cookies
 end
 ---Sets the HTTP response code
 ---@param code integer
